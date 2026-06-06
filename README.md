@@ -49,8 +49,8 @@ __help__ = {
 
 GitHub update workflow
 - The bot can detect new commits on the remote `origin/main` branch if the project is a Git repo.
-- If updates are available, the configured bot admin receives a notification.
-- Admins can pull updates from the bot UI and the bot will recommend or request a restart if needed.
+- Users can check for updates and pull them from the bot UI.
+- The bot will recommend or request a restart if needed after updates.
 - If `requirements.txt` changes, the bot will try to install updated dependencies automatically after pulling.
 
 AI prompt template (use this when asking an AI to add features)

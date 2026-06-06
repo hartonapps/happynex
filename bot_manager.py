@@ -20,7 +20,6 @@ load_dotenv()
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 API_ID = int(os.getenv('API_ID') or 0)
 API_HASH = os.getenv('API_HASH')
-ADMIN_ID = int(os.getenv('ADMIN_ID') or 0)
 GIT_REMOTE = os.getenv('GIT_REMOTE', 'origin')
 GIT_BRANCH = os.getenv('GIT_BRANCH', 'main')
 
@@ -81,18 +80,12 @@ def should_require_restart(changed_files):
 
 async def check_remote_updates_job(context):
     global UPDATE_AVAILABLE, UPDATE_FILES
-    if not git_manager or not ADMIN_ID:
+    if not git_manager:
         return
     if git_manager.check_remote_updates(remote=GIT_REMOTE, branch=GIT_BRANCH):
         if not UPDATE_AVAILABLE:
             UPDATE_AVAILABLE = True
             UPDATE_FILES = git_manager.get_commit_diff(remote=GIT_REMOTE, branch=GIT_BRANCH)
-            message = 'GitHub updates are available for the bot repository.\n'
-            message += format_changed_files(UPDATE_FILES)
-            try:
-                await context.bot.send_message(chat_id=ADMIN_ID, text=message)
-            except Exception:
-                pass
 
 
 async def check_updates(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -155,10 +148,6 @@ async def pull_updates(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def request_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if ADMIN_ID and update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text('Only the configured admin may restart the bot.')
-        return
-
     await update.message.reply_text('Restarting the bot now. Please wait...')
     sys.exit(0)
 
@@ -244,14 +233,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton('My Sessions', callback_data='sessions')],
         [InlineKeyboardButton('Plugins', callback_data='plugins')],
     ]
-    # add admin-only buttons for owner
-    if ADMIN_ID and update.effective_user.id == ADMIN_ID:
-        keyboard.append([InlineKeyboardButton('🔄 Check Updates', callback_data='check_updates')])
-        if PENDING_RESTART:
-            keyboard.append([InlineKeyboardButton('⚠️ Restart Bot', callback_data='restart_bot')])
-    
+    keyboard.append([InlineKeyboardButton('🔄 Check Updates', callback_data='check_updates')])
+    if PENDING_RESTART:
+        keyboard.append([InlineKeyboardButton('⚠️ Restart Bot', callback_data='restart_bot')])
+
     msg = 'Welcome — choose an action:'
-    if UPDATE_AVAILABLE and ADMIN_ID and update.effective_user.id == ADMIN_ID:
+    if UPDATE_AVAILABLE:
         msg += '\n\n✨ Updates available! Press Check Updates.'
     
     await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
@@ -441,7 +428,7 @@ def main():
     app.add_handler(CommandHandler('restart', request_restart))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
-    if git_manager and ADMIN_ID:
+    if git_manager:
         app.job_queue.run_repeating(check_remote_updates_job, interval=600, first=10)
 
     print('Bot manager running...')
