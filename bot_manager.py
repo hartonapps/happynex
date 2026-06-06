@@ -21,6 +21,8 @@ BOT_TOKEN = os.getenv('BOT_TOKEN')
 API_ID = int(os.getenv('API_ID') or 0)
 API_HASH = os.getenv('API_HASH')
 ADMIN_ID = int(os.getenv('ADMIN_ID') or 0)
+GIT_REMOTE = os.getenv('GIT_REMOTE', 'origin')
+GIT_BRANCH = os.getenv('GIT_BRANCH', 'main')
 
 SESSIONS_FILE = 'sessions.json'
 os.makedirs('sessions', exist_ok=True)
@@ -81,10 +83,10 @@ async def check_remote_updates_job(context):
     global UPDATE_AVAILABLE, UPDATE_FILES
     if not git_manager or not ADMIN_ID:
         return
-    if git_manager.check_remote_updates():
+    if git_manager.check_remote_updates(remote=GIT_REMOTE, branch=GIT_BRANCH):
         if not UPDATE_AVAILABLE:
             UPDATE_AVAILABLE = True
-            UPDATE_FILES = git_manager.get_commit_diff()
+            UPDATE_FILES = git_manager.get_commit_diff(remote=GIT_REMOTE, branch=GIT_BRANCH)
             message = 'GitHub updates are available for the bot repository.\n'
             message += format_changed_files(UPDATE_FILES)
             try:
@@ -99,9 +101,9 @@ async def check_updates(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text('Git repository not available in this folder.')
         return
 
-    if git_manager.check_remote_updates():
+    if git_manager.check_remote_updates(remote=GIT_REMOTE, branch=GIT_BRANCH):
         UPDATE_AVAILABLE = True
-        UPDATE_FILES = git_manager.get_commit_diff()
+        UPDATE_FILES = git_manager.get_commit_diff(remote=GIT_REMOTE, branch=GIT_BRANCH)
         await update.message.reply_text(
             'Updates are available from the remote repository.\n'
             + format_changed_files(UPDATE_FILES),
@@ -120,8 +122,8 @@ async def pull_updates(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text('Git repository not available in this folder.')
         return
 
-    changed_files = git_manager.get_commit_diff()
-    success, message = git_manager.pull_updates()
+    changed_files = git_manager.get_commit_diff(remote=GIT_REMOTE, branch=GIT_BRANCH)
+    success, message = git_manager.pull_updates(remote=GIT_REMOTE, branch=GIT_BRANCH)
     if not success:
         await update.message.reply_text(f'Pull failed: {message}')
         return
