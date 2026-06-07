@@ -234,11 +234,32 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not client or not phone:
             await query.message.reply_text('Session lost. Start over with /connect.')
             return
+        
+        # ✅ Guard: Check if already requesting (prevent race condition)
+        if TEMP[user.id].get('_resend_pending'):
+            await query.message.reply_text('⏳ Code resend already in progress. Please wait...')
+            return
+        
         try:
+            TEMP[user.id]['_resend_pending'] = True
+            
+            # ✅ DEBUG: Log state before resend
+            old_hash = TEMP[user.id].get('phone_code_hash', 'NONE')
+            print(f"[USER {user.id}] RESEND_CODE: Old hash={old_hash[:20]}...")
+            
             result = await client.send_code_request(phone)
-            TEMP[user.id]['phone_code_hash'] = result.phone_code_hash
+            new_hash = result.phone_code_hash
+            
+            # ✅ DEBUG: Log new hash
+            print(f"[USER {user.id}] RESEND_CODE: New hash={new_hash[:20]}... (changed={old_hash != new_hash})")
+            
+            TEMP[user.id].update({
+                'phone_code_hash': new_hash,
+                '_resend_pending': False
+            })
             await query.message.reply_text('✅ New code sent! Reply with the code.')
         except Exception as e:
+            print(f"[USER {user.id}] RESEND_CODE ERROR: {e}")
             await query.message.reply_text(f'Failed to resend: {e}')
             try:
                 await client.disconnect()
@@ -287,7 +308,11 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             result = await client.send_code_request(phone)
             phone_code_hash = result.phone_code_hash
+            
+            # ✅ DEBUG: Log initial code request
+            print(f"[USER {user.id}] AWAIT_PHONE: send_code_request hash={phone_code_hash[:20]}...")
         except Exception as e:
+            print(f"[USER {user.id}] AWAIT_PHONE ERROR: {e}")
             await update.message.reply_text(f'Failed to send code: {e}')
             await client.disconnect()
             TEMP.pop(user.id, None)
@@ -298,7 +323,8 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'state': 'AWAIT_CODE',
             'phone': phone,
             'client': client,  # ← Client stays connected
-            'phone_code_hash': phone_code_hash
+            'phone_code_hash': phone_code_hash,
+            '_resend_pending': False
         })
         await update.message.reply_text(
             '✅ Code sent!\n\nReply with the login code (expires in ~5 minutes).',
@@ -312,9 +338,15 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         phone = TEMP[user.id]['phone']
         phone_code_hash = TEMP[user.id].get('phone_code_hash')
         
+        # ✅ DEBUG: Log state before sign_in
+        is_connected = client.is_connected() if hasattr(client, 'is_connected') else 'unknown'
+        print(f"[USER {user.id}] AWAIT_CODE: code_len={len(code)}, hash={phone_code_hash[:20] if phone_code_hash else 'NONE'}..., connected={is_connected}")
+        
         try:
             await client.sign_in(phone=phone, code=code, phone_code_hash=phone_code_hash)
+            print(f"[USER {user.id}] AWAIT_CODE: sign_in SUCCESS")
         except PhoneCodeExpiredError:
+            print(f"[USER {user.id}] AWAIT_CODE: PhoneCodeExpiredError with hash={phone_code_hash[:20] if phone_code_hash else 'NONE'}...")
             # ✅ Keep client alive for retry/resend
             await update.message.reply_text(
                 '❌ Code expired.\n\nUse the button below to get a new one.',
@@ -322,6 +354,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         except PhoneCodeInvalidError:
+            print(f"[USER {user.id}] AWAIT_CODE: PhoneCodeInvalidError")
             # ✅ Keep client alive for retry
             await update.message.reply_text(
                 '❌ Invalid code. Please try again.',
@@ -329,11 +362,13 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         except SessionPasswordNeededError:
+            print(f"[USER {user.id}] AWAIT_CODE: SessionPasswordNeededError (2FA)")
             # ✅ Client stays alive for 2FA password
             TEMP[user.id]['state'] = 'AWAIT_PASSWORD'
             await update.message.reply_text('🔐 Two-step password enabled.\n\nSend your 2FA password.')
             return
         except Exception as e:
+            print(f"[USER {user.id}] AWAIT_CODE ERROR: {type(e).__name__}: {e}")
             await update.message.reply_text(f'❌ Sign-in failed: {e}')
             try:
                 await client.disconnect()
@@ -390,9 +425,14 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         password = text
         client: TelegramClient = TEMP[user.id]['client']
         phone = TEMP[user.id]['phone']
+        
+        print(f"[USER {user.id}] AWAIT_PASSWORD: attempting 2FA sign_in")
+        
         try:
             await client.sign_in(password=password)
+            print(f"[USER {user.id}] AWAIT_PASSWORD: sign_in SUCCESS")
         except Exception as e:
+            print(f"[USER {user.id}] AWAIT_PASSWORD ERROR: {type(e).__name__}: {e}")
             await update.message.reply_text(f'❌ Password signin failed: {e}')
             try:
                 await client.disconnect()
