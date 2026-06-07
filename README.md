@@ -1,12 +1,13 @@
 # Telegram Userbot Manager
 
 Quick starter scaffold for a Telegram userbot manager. Features:
-- Management bot handles account connection (phone/code/2FA) and saves user sessions.
+- Management bot handles account connection (phone/code/2FA), adds/removes saved sessions, and checks for updates.
+- Saved Telethon userbot sessions run independently and respond to `.commands` and plugin commands from any chat in the user account.
 - Plugin-based userbot features loadable from `plugins/`.
 
 Setup
 
-1. Copy `.env.example` to `.env` and fill `BOT_TOKEN`, `API_ID`, `API_HASH`, `GIT_REMOTE`, and `GIT_BRANCH`.
+1. Copy `.env.example` to `.env` and fill `BOT_TOKEN`, `API_ID`, `API_HASH`, `GIT_REMOTE`, `GIT_REMOTE_URL`, and `GIT_BRANCH`.
 2. Create a virtualenv and install requirements:
 
 ```powershell
@@ -17,9 +18,11 @@ pip install -r requirements.txt
 
 GitHub update config
 - `GIT_REMOTE`: remote name to check and pull from (default `origin`).
+- `GIT_REMOTE_URL`: repository URL to use when the local copy does not already have a configured Git remote.
 - `GIT_BRANCH`: branch name to compare and pull (default `main`).
 
-If your Git repo has a remote set, put those values in `.env`. The bot uses them to detect and pull updates.
+If your Git repo already has a remote configured, set `GIT_REMOTE` and `GIT_BRANCH`.
+If you are deploying to a host without an existing Git clone or without console access, also set `GIT_REMOTE_URL` to the repository URL used for fetching and pulling updates.
 
 This repository tracks a placeholder `.env` file so it is visible and editable in the project.
 
@@ -37,6 +40,7 @@ Files of interest
 Plugin dependency support
 - Plugins may declare required packages with a `__requires__` variable.
 - If a plugin needs a package that is not installed, the bot will auto-install it on load and append it to `requirements.txt`.
+- Userbot sessions handle plugin commands from any chat using `.<command>` and support `.commands` to list available commands.
 - Example plugin header:
 
 ```python

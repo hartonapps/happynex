@@ -6,7 +6,7 @@ import sys
 from datetime import datetime
 
 from dotenv import load_dotenv
-from telethon import TelegramClient
+from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.errors import SessionPasswordNeededError, PhoneCodeExpiredError, PhoneCodeInvalidError
 
@@ -21,13 +21,14 @@ BOT_TOKEN = os.getenv('BOT_TOKEN')
 API_ID = int(os.getenv('API_ID') or 0)
 API_HASH = os.getenv('API_HASH')
 GIT_REMOTE = os.getenv('GIT_REMOTE', 'origin')
+GIT_REMOTE_URL = os.getenv('GIT_REMOTE_URL')
 GIT_BRANCH = os.getenv('GIT_BRANCH', 'main')
 
 SESSIONS_FILE = 'sessions.json'
 os.makedirs('sessions', exist_ok=True)
 
 # git manager for updates
-git_manager = get_git_manager()
+git_manager = get_git_manager(remote_name=GIT_REMOTE, remote_url=GIT_REMOTE_URL)
 
 # load plugins and check for new deps
 plugins_result = load_plugins()
@@ -43,11 +44,106 @@ UPDATE_AVAILABLE = False
 PENDING_RESTART = False
 RESTART_REASON = []
 UPDATE_FILES = []
+LIVE_SESSION_CLIENTS = {}
 
 if new_deps:
     PENDING_RESTART = True
     RESTART_REASON.extend([f'New dependency: {pkg}' for pkg in new_deps])
     print('Installed new plugin dependencies:', new_deps)
+
+
+def format_available_commands():
+    if not plugins:
+        return 'No plugin commands loaded.'
+    lines = []
+    for cmd, meta in plugins.items():
+        description = meta['help'].get('description', 'No description available.')
+        lines.append(f'.{cmd} — {description}')
+    return 'Available commands:\n' + '\n'.join(lines)
+
+
+def register_userbot_handlers(client):
+    @client.on(events.NewMessage(outgoing=True, pattern=r'^\.\w+'))
+    async def userbot_command_handler(event):
+        text = event.raw_text.strip()
+        if not text.startswith('.'):
+            return
+
+        parts = text[1:].split(None, 1)
+        cmd = parts[0].lower()
+        args = parts[1] if len(parts) > 1 else ''
+
+        if cmd == 'commands':
+            await event.reply(format_available_commands())
+            return
+
+        if cmd not in plugins:
+            return
+
+        try:
+            result = await plugins[cmd]['run'](client, args)
+            if result is None:
+                result = 'Done.'
+            await event.reply(str(result))
+        except Exception as e:
+            await event.reply(f'Error running .{cmd}: {e}')
+
+
+def get_session_status(session_str):
+    return 'active' if session_str in LIVE_SESSION_CLIENTS else 'inactive'
+
+
+async def start_userbot_session(session_str, phone, owner_id):
+    if session_str in LIVE_SESSION_CLIENTS:
+        return True
+
+    client = TelegramClient(StringSession(session_str), API_ID, API_HASH)
+    try:
+        await client.connect()
+        if not await client.is_user_authorized():
+            await client.disconnect()
+            return False
+        register_userbot_handlers(client)
+        task = asyncio.create_task(client.run_until_disconnected())
+        LIVE_SESSION_CLIENTS[session_str] = {
+            'client': client,
+            'phone': phone,
+            'owner': owner_id,
+            'task': task
+        }
+        print(f'Loaded userbot session for {phone} (owner={owner_id}).')
+        return True
+    except Exception as e:
+        print(f'Failed to start userbot session for {phone}: {e}')
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+        return False
+
+
+async def stop_userbot_session(session_str):
+    session_info = LIVE_SESSION_CLIENTS.pop(session_str, None)
+    if not session_info:
+        return
+    client = session_info['client']
+    task = session_info.get('task')
+    if task and not task.done():
+        task.cancel()
+    try:
+        await client.disconnect()
+    except Exception:
+        pass
+
+
+async def start_all_userbot_sessions():
+    sessions = load_sessions()
+    for owner, user_sessions in sessions.items():
+        for session_meta in user_sessions:
+            session_str = session_meta.get('session')
+            phone = session_meta.get('phone')
+            if session_str:
+                await start_userbot_session(session_str, phone, owner)
 
 
 def load_sessions():
@@ -233,33 +329,32 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         client = TEMP[user.id].get('client')
         if not client or not phone:
             await query.message.reply_text('Session lost. Start over with /connect.')
+            TEMP.pop(user.id, None)
             return
         
-        # ✅ Guard: Check if already requesting (prevent race condition)
         if TEMP[user.id].get('_resend_pending'):
             await query.message.reply_text('⏳ Code resend already in progress. Please wait...')
             return
         
         try:
             TEMP[user.id]['_resend_pending'] = True
-            
-            # ✅ DEBUG: Log state before resend
             old_hash = TEMP[user.id].get('phone_code_hash', 'NONE')
             print(f"[USER {user.id}] RESEND_CODE: Old hash={old_hash[:20]}...")
             
             result = await client.send_code_request(phone)
             new_hash = result.phone_code_hash
-            
-            # ✅ DEBUG: Log new hash
             print(f"[USER {user.id}] RESEND_CODE: New hash={new_hash[:20]}... (changed={old_hash != new_hash})")
             
             TEMP[user.id].update({
                 'phone_code_hash': new_hash,
                 '_resend_pending': False
             })
-            await query.message.reply_text('✅ New code sent! Reply with the code.')
+            await query.message.reply_text(
+                '✅ New code sent! Reply with the code from Telegram now.',
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('🔄 Resend Code', callback_data='resend_code')]])
+            )
         except Exception as e:
-            print(f"[USER {user.id}] RESEND_CODE ERROR: {e}")
+            print(f"[USER {user.id}] RESEND_CODE ERROR: {type(e).__name__}: {e}")
             await query.message.reply_text(f'Failed to resend: {e}')
             try:
                 await client.disconnect()
@@ -306,6 +401,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         client = TelegramClient(StringSession(), API_ID, API_HASH)
         await client.connect()
         try:
+            # Note: do not force SMS. Use the standard Telegram code flow.
             result = await client.send_code_request(phone)
             phone_code_hash = result.phone_code_hash
             
@@ -327,49 +423,73 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             '_resend_pending': False
         })
         await update.message.reply_text(
-            '✅ Code sent!\n\nReply with the login code (expires in ~5 minutes).',
+            '✅ Code sent!\n\nReply with only the numeric login code (expires in ~5 minutes).\n\nImportant: if the code arrives in the same Telegram app where you are typing it, it may auto-expire. Use another Telegram client/device if possible, and do not forward the entire login message.',
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('🔄 Resend Code', callback_data='resend_code')]])
         )
         return
 
     if state == 'AWAIT_CODE':
-        code = text
-        client: TelegramClient = TEMP[user.id]['client']
-        phone = TEMP[user.id]['phone']
+        code = ''.join(ch for ch in text if ch.isdigit())
+        if not code:
+            await update.message.reply_text(
+                '❌ Please send only the numeric login code from Telegram. Do not forward an entire message or include extra text.',
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('🔄 Resend Code', callback_data='resend_code')]])
+            )
+            return
+
+        client: TelegramClient = TEMP[user.id].get('client')
+        phone = TEMP[user.id].get('phone')
         phone_code_hash = TEMP[user.id].get('phone_code_hash')
-        
+        if not client or not phone or not phone_code_hash:
+            await update.message.reply_text('⚠️ Sign-in state lost. Please start over with /connect.')
+            TEMP.pop(user.id, None)
+            return
+
         # ✅ DEBUG: Log state before sign_in
         is_connected = client.is_connected() if hasattr(client, 'is_connected') else 'unknown'
-        print(f"[USER {user.id}] AWAIT_CODE: code_len={len(code)}, hash={phone_code_hash[:20] if phone_code_hash else 'NONE'}..., connected={is_connected}")
+        print(f"[USER {user.id}] AWAIT_CODE: code={code}, hash={phone_code_hash[:20]}..., connected={is_connected}")
         
         try:
             await client.sign_in(phone=phone, code=code, phone_code_hash=phone_code_hash)
             print(f"[USER {user.id}] AWAIT_CODE: sign_in SUCCESS")
         except PhoneCodeExpiredError:
-            print(f"[USER {user.id}] AWAIT_CODE: PhoneCodeExpiredError with hash={phone_code_hash[:20] if phone_code_hash else 'NONE'}...")
-            # ✅ Keep client alive for retry/resend
+            print(f"[USER {user.id}] AWAIT_CODE: PhoneCodeExpiredError with hash={phone_code_hash[:20]}...")
             await update.message.reply_text(
-                '❌ Code expired.\n\nUse the button below to get a new one.',
+                '❌ Code expired. The code you entered is no longer valid.\n\nIf you are using the same Telegram app where the code arrived, it may auto-expire. Try using another client/device or request a new code.',
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('🔄 Resend Code', callback_data='resend_code')]])
             )
             return
         except PhoneCodeInvalidError:
             print(f"[USER {user.id}] AWAIT_CODE: PhoneCodeInvalidError")
-            # ✅ Keep client alive for retry
             await update.message.reply_text(
-                '❌ Invalid code. Please try again.',
+                '❌ Invalid code. Please send only the numeric code exactly as received, and avoid forwarding the full Telegram login message from the same app.',
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('🔄 Resend Code', callback_data='resend_code')]])
             )
             return
         except SessionPasswordNeededError:
             print(f"[USER {user.id}] AWAIT_CODE: SessionPasswordNeededError (2FA)")
-            # ✅ Client stays alive for 2FA password
             TEMP[user.id]['state'] = 'AWAIT_PASSWORD'
             await update.message.reply_text('🔐 Two-step password enabled.\n\nSend your 2FA password.')
             return
         except Exception as e:
-            print(f"[USER {user.id}] AWAIT_CODE ERROR: {type(e).__name__}: {e}")
-            await update.message.reply_text(f'❌ Sign-in failed: {e}')
+            # Fallback: inspect exception to detect expired/invalid code even if a different RPC class is raised
+            ename = type(e).__name__
+            emsg = str(e)
+            print(f"[USER {user.id}] AWAIT_CODE ERROR ({ename}): {emsg}")
+            if 'PhoneCodeExpired' in ename or 'EXPIRED' in emsg.upper() or 'PHONE_CODE_EXPIRED' in emsg.upper():
+                await update.message.reply_text(
+                    '❌ Code expired.\n\nIf you copied the code from the same Telegram client where you started this process it may auto-expire — try Resend Code.',
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('🔄 Resend Code', callback_data='resend_code')]])
+                )
+                return
+            if 'PhoneCodeInvalid' in ename or 'INVALID' in emsg.upper() or 'PHONE_CODE_INVALID' in emsg.upper():
+                await update.message.reply_text(
+                    '❌ Invalid code. Make sure you pasted the numeric code exactly (don’t forward it verbatim from the same Telegram app).',
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('🔄 Resend Code', callback_data='resend_code')]])
+                )
+                return
+            # generic fallback: treat as sign-in failure and clean up
+            await update.message.reply_text(f'❌ Sign-in failed: {emsg}')
             try:
                 await client.disconnect()
             except:
@@ -385,10 +505,15 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sessions[str(user.id)] = user_sessions
         save_sessions(sessions)
         await update.message.reply_text('✅ Account connected and session saved.')
-        try:
-            await client.disconnect()
-        except:
-            pass
+
+        register_userbot_handlers(client)
+        task = asyncio.create_task(client.run_until_disconnected())
+        LIVE_SESSION_CLIENTS[session_str] = {
+            'client': client,
+            'phone': phone,
+            'owner': str(user.id),
+            'task': task
+        }
         TEMP.pop(user.id, None)
         return
 
@@ -448,10 +573,15 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sessions[str(user.id)] = user_sessions
         save_sessions(sessions)
         await update.message.reply_text('✅ Account connected and session saved (2FA).')
-        try:
-            await client.disconnect()
-        except:
-            pass
+
+        register_userbot_handlers(client)
+        task = asyncio.create_task(client.run_until_disconnected())
+        LIVE_SESSION_CLIENTS[session_str] = {
+            'client': client,
+            'phone': phone,
+            'owner': str(user.id),
+            'task': task
+        }
         TEMP.pop(user.id, None)
         return
 
@@ -464,7 +594,9 @@ async def list_sessions(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     lines = []
     for i, s in enumerate(user_sessions, 1):
-        lines.append(f"{i}. {s.get('phone')} — created {s.get('created_at')}")
+        session_str = s.get('session')
+        status = get_session_status(session_str) if session_str else 'inactive'
+        lines.append(f"{i}. {s.get('phone')} — {status} — created {s.get('created_at')}")
     await update.message.reply_text('\n'.join(lines))
 
 
@@ -476,6 +608,34 @@ async def list_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for cmd, meta in plugins.items():
         lines.append(f"{cmd} - {meta['help'].get('description','')}")
     await update.message.reply_text('\n'.join(lines))
+
+
+async def delete_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = context.args
+    if not args:
+        await update.message.reply_text('Usage: /delete <session_index>')
+        return
+    try:
+        idx = int(args[0]) - 1
+    except ValueError:
+        await update.message.reply_text('Session index must be a number from /sessions list.')
+        return
+
+    sessions = load_sessions()
+    user_sessions = sessions.get(str(update.effective_user.id), [])
+    if idx < 0 or idx >= len(user_sessions):
+        await update.message.reply_text('Invalid session index.')
+        return
+
+    session_meta = user_sessions.pop(idx)
+    sessions[str(update.effective_user.id)] = user_sessions
+    save_sessions(sessions)
+
+    session_str = session_meta.get('session')
+    if session_str:
+        await stop_userbot_session(session_str)
+
+    await update.message.reply_text(f'Session {idx + 1} deleted.')
 
 
 async def exec_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -529,10 +689,18 @@ def main():
     app.add_handler(CommandHandler('exec', exec_command))
     app.add_handler(CommandHandler('check_updates', check_updates))
     app.add_handler(CommandHandler('restart', request_restart))
+    app.add_handler(CommandHandler('delete', delete_session))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.create_task(start_all_userbot_sessions())
+
     if git_manager:
-        app.job_queue.run_repeating(check_remote_updates_job, interval=600, first=10)
+        if getattr(app, 'job_queue', None):
+            app.job_queue.run_repeating(check_remote_updates_job, interval=600, first=10)
+        else:
+            print('Update check skipped: JobQueue is unavailable. Install python-telegram-bot[job-queue] to enable update polling.')
 
     print('Bot manager running...')
     app.run_polling()
