@@ -99,6 +99,18 @@ async def send_userbot_result(event, text):
             pass
 
 
+async def reply_to_update(update: Update, text: str, **kwargs):
+    message = update.effective_message
+    if message:
+        await message.reply_text(text, **kwargs)
+        return
+    query = getattr(update, 'callback_query', None)
+    if query and query.message:
+        await query.message.reply_text(text, **kwargs)
+        return
+    raise RuntimeError('No message available to reply to.')
+
+
 def register_userbot_handlers(client):
     @client.on(events.NewMessage(outgoing=True, pattern=r'^\.\w+'))
     async def userbot_command_handler(event):
@@ -224,13 +236,14 @@ async def check_remote_updates_job(context):
 async def check_updates(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global UPDATE_AVAILABLE, UPDATE_FILES
     if not git_manager:
-        await update.message.reply_text('Git repository not available in this folder.')
+        await reply_to_update(update, 'Git repository not available in this folder.')
         return
 
     if git_manager.check_remote_updates(remote=GIT_REMOTE, branch=GIT_BRANCH):
         UPDATE_AVAILABLE = True
         UPDATE_FILES = git_manager.get_commit_diff(remote=GIT_REMOTE, branch=GIT_BRANCH)
-        await update.message.reply_text(
+        await reply_to_update(
+            update,
             'Updates are available from the remote repository.\n'
             + format_changed_files(UPDATE_FILES),
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('Pull updates now', callback_data='pull_updates')]])
@@ -239,19 +252,19 @@ async def check_updates(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     UPDATE_AVAILABLE = False
     UPDATE_FILES = []
-    await update.message.reply_text('No updates found on the remote repository.')
+    await reply_to_update(update, 'No updates found on the remote repository.')
 
 
 async def pull_updates(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global UPDATE_AVAILABLE, PENDING_RESTART, RESTART_REASON, UPDATE_FILES
     if not git_manager:
-        await update.message.reply_text('Git repository not available in this folder.')
+        await reply_to_update(update, 'Git repository not available in this folder.')
         return
 
     changed_files = git_manager.get_commit_diff(remote=GIT_REMOTE, branch=GIT_BRANCH)
     success, message = git_manager.pull_updates(remote=GIT_REMOTE, branch=GIT_BRANCH)
     if not success:
-        await update.message.reply_text(f'Pull failed: {message}')
+        await reply_to_update(update, f'Pull failed: {message}')
         return
 
     UPDATE_AVAILABLE = False
@@ -278,17 +291,20 @@ async def pull_updates(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if package_message:
         response += package_message
 
-    await update.message.reply_text(response)
+    await reply_to_update(update, response)
 
 
 async def request_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text('Restarting the bot now. Please wait...')
+    await reply_to_update(update, 'Restarting the bot now. Please wait...')
     sys.exit(0)
 
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    try:
+        await query.answer()
+    except Exception:
+        pass
     data = query.data or ''
     user = query.from_user
 
