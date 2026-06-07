@@ -8,7 +8,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 from telethon import TelegramClient
 from telethon.sessions import StringSession
-from telethon.errors import SessionPasswordNeededError
+from telethon.errors import SessionPasswordNeededError, PhoneCodeExpiredError, PhoneCodeInvalidError
 
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
@@ -235,7 +235,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text('Session lost. Start over with /connect.')
             return
         try:
-            await client.send_code_request(phone)
+            result = await client.send_code_request(phone)
+            TEMP[user.id]['phone_code_hash'] = result.phone_code_hash
             await query.message.reply_text('✅ New code sent! Reply with the code.')
         except Exception as e:
             await query.message.reply_text(f'Failed to resend: {e}')
@@ -284,13 +285,19 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         client = TelegramClient(StringSession(), API_ID, API_HASH)
         await client.connect()
         try:
-            await client.send_code_request(phone)
+            result = await client.send_code_request(phone)
+            phone_code_hash = result.phone_code_hash
         except Exception as e:
             await update.message.reply_text(f'Failed to send code: {e}')
             await client.disconnect()
             TEMP.pop(user.id, None)
             return
-        TEMP[user.id].update({'state': 'AWAIT_CODE', 'phone': phone, 'client': client})
+        TEMP[user.id].update({
+            'state': 'AWAIT_CODE',
+            'phone': phone,
+            'client': client,
+            'phone_code_hash': phone_code_hash
+        })
         await update.message.reply_text(
             '✅ Code sent!\n\nReply with the login code (expires in ~5 minutes).',
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('🔄 Resend Code', callback_data='resend_code')]])
@@ -301,26 +308,33 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         code = text
         client: TelegramClient = TEMP[user.id]['client']
         phone = TEMP[user.id]['phone']
+        phone_code_hash = TEMP[user.id].get('phone_code_hash')
+        
         try:
-            await client.sign_in(phone, code)
+            await client.sign_in(phone=phone, code=code, phone_code_hash=phone_code_hash)
+        except PhoneCodeExpiredError:
+            await update.message.reply_text(
+                '❌ Code expired.\n\nUse the button below to get a new one.',
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('🔄 Resend Code', callback_data='resend_code')]])
+            )
+            return
+        except PhoneCodeInvalidError:
+            await update.message.reply_text(
+                '❌ Invalid code. Please try again.',
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('🔄 Resend Code', callback_data='resend_code')]])
+            )
+            return
         except SessionPasswordNeededError:
             TEMP[user.id]['state'] = 'AWAIT_PASSWORD'
             await update.message.reply_text('🔐 Two-step password enabled.\n\nSend your 2FA password.')
             return
         except Exception as e:
-            error_msg = str(e).lower()
-            if 'expired' in error_msg:
-                await update.message.reply_text(
-                    '❌ Code expired.\n\nUse the button below to get a new one.',
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('🔄 Resend Code', callback_data='resend_code')]])
-                )
-            else:
-                await update.message.reply_text(f'❌ Sign-in failed: {e}')
-                try:
-                    await client.disconnect()
-                except:
-                    pass
-                TEMP.pop(user.id, None)
+            await update.message.reply_text(f'❌ Sign-in failed: {e}')
+            try:
+                await client.disconnect()
+            except:
+                pass
+            TEMP.pop(user.id, None)
             return
 
         # success
