@@ -41,6 +41,8 @@ Plugin dependency support
 - Plugins may declare required packages with a `__requires__` variable.
 - If a plugin needs a package that is not installed, the bot will auto-install it on load and append it to `requirements.txt`.
 - Userbot sessions handle plugin commands from any chat using `.<command>` and support `.commands` to list available commands.
+- Plugin command names in `__help__['commands']` should be bare names like `ping`, not prefixed with a dot.
+- Userbot plugin responses edit the outgoing command message when possible, which is the expected userbot behavior.
 - Example plugin header:
 
 ```python
@@ -73,6 +75,7 @@ Plugin interface:
 - It should define `__help__ = {'commands': [...], 'description': '...'}.`
 - It may declare `__requires__ = ['package-name']` for extra dependencies.
 - It must provide `async def run(client, args)` where `client` is a `Telethon` `TelegramClient` and `args` is the command text.
+- Return a string from `run(...)` to replace the invoking `.command` message.
 
 Example plugin:
 ```python

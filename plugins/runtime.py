@@ -3,7 +3,7 @@ Utility plugin that exposes the .runtime command.
 """
 
 __help__ = {
-    'commands': ['.runtime'],
+    'commands': ['runtime'],
     'description': 'Return bot runtime and current UTC timestamp.'
 }
 

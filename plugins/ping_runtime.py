@@ -3,7 +3,7 @@ Simple utility plugin that exposes the .ping command.
 """
 
 __help__ = {
-    'commands': ['.ping'],
+    'commands': ['ping'],
     'description': 'Responds with Pong to verify the bot is alive.'
 }
 

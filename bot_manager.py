@@ -25,6 +25,7 @@ GIT_REMOTE_URL = os.getenv('GIT_REMOTE_URL')
 GIT_BRANCH = os.getenv('GIT_BRANCH', 'main')
 
 SESSIONS_FILE = 'sessions.json'
+STATE_FILE = 'bot_state.json'
 os.makedirs('sessions', exist_ok=True)
 
 # git manager for updates
@@ -62,6 +63,42 @@ def format_available_commands():
     return 'Available commands:\n' + '\n'.join(lines)
 
 
+def load_state():
+    try:
+        with open(STATE_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_state(data):
+    with open(STATE_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2)
+
+
+def set_update_restart_pending(pending: bool, reason: str = ''):
+    state = load_state()
+    state['pending_restart'] = pending
+    state['restart_reason'] = reason
+    state['updated_at'] = datetime.utcnow().isoformat()
+    save_state(state)
+
+
+def get_update_restart_pending():
+    return bool(load_state().get('pending_restart', False))
+
+
+async def send_userbot_result(event, text):
+    try:
+        await event.edit(text)
+        return
+    except Exception:
+        try:
+            await event.respond(text)
+        except Exception:
+            pass
+
+
 def register_userbot_handlers(client):
     @client.on(events.NewMessage(outgoing=True, pattern=r'^\.\w+'))
     async def userbot_command_handler(event):
@@ -74,7 +111,7 @@ def register_userbot_handlers(client):
         args = parts[1] if len(parts) > 1 else ''
 
         if cmd == 'commands':
-            await event.reply(format_available_commands())
+            await send_userbot_result(event, format_available_commands())
             return
 
         if cmd not in plugins:
@@ -84,9 +121,9 @@ def register_userbot_handlers(client):
             result = await plugins[cmd]['run'](client, args)
             if result is None:
                 result = 'Done.'
-            await event.reply(str(result))
+            await send_userbot_result(event, str(result))
         except Exception as e:
-            await event.reply(f'Error running .{cmd}: {e}')
+            await send_userbot_result(event, f'Error running .{cmd}: {e}')
 
 
 def get_session_status(session_str):
@@ -223,6 +260,7 @@ async def pull_updates(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if needs_restart:
         PENDING_RESTART = True
         RESTART_REASON.append('Repository update')
+        set_update_restart_pending(True, 'Repository update')
 
     requirements_installed = False
     package_message = ''
@@ -365,6 +403,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global PENDING_RESTART
     # interactive main menu
     keyboard = [
         [InlineKeyboardButton('Connect Account', callback_data='connect')],
@@ -376,6 +415,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append([InlineKeyboardButton('⚠️ Restart Bot', callback_data='restart_bot')])
 
     msg = 'Welcome — choose an action:'
+    if get_update_restart_pending():
+        msg += '\n\n✅ Update complete. The bot restarted successfully.'
+        set_update_restart_pending(False, '')
+        PENDING_RESTART = False
     if UPDATE_AVAILABLE:
         msg += '\n\n✨ Updates available! Press Check Updates.'
     
@@ -677,9 +720,11 @@ async def exec_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def main():
+    global PENDING_RESTART
     if not BOT_TOKEN or not API_ID or not API_HASH:
         print('Please fill .env with BOT_TOKEN, API_ID, API_HASH')
         return
+    PENDING_RESTART = get_update_restart_pending()
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler('start', start))
     app.add_handler(CallbackQueryHandler(handle_callback))

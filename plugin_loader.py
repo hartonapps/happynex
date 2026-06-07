@@ -54,7 +54,10 @@ def load_plugins():
             run_fn = getattr(mod, 'run', None)
             if help_meta and run_fn:
                 for cmd in help_meta.get('commands', []):
-                    plugins[cmd] = {'module': mod, 'help': help_meta, 'run': run_fn}
+                    normalized_cmd = str(cmd).lstrip('.').lower()
+                    if not normalized_cmd:
+                        continue
+                    plugins[normalized_cmd] = {'module': mod, 'help': help_meta, 'run': run_fn}
         except Exception:
             continue
 
