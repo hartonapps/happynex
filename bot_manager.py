@@ -342,8 +342,8 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             TEMP.pop(user.id, None)
             return
 
-        # ✅ SUCCESS - Only now disconnect
-        session_str = StringSession(client.session).save()
+        # ✅ SUCCESS - Use client.session.save() instead of StringSession(client.session).save()
+        session_str = client.session.save()
         sessions = load_sessions()
         user_sessions = sessions.get(str(user.id), [])
         user_sessions.append({'session': session_str, 'phone': phone, 'created_at': datetime.utcnow().isoformat()})
@@ -400,7 +400,8 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
             TEMP.pop(user.id, None)
             return
-        session_str = StringSession(client.session).save()
+        # ✅ Use client.session.save() instead of StringSession(client.session).save()
+        session_str = client.session.save()
         sessions = load_sessions()
         user_sessions = sessions.get(str(user.id), [])
         user_sessions.append({'session': session_str, 'phone': phone, 'created_at': datetime.utcnow().isoformat()})
