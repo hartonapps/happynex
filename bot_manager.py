@@ -225,6 +225,27 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text('Send command arguments as a single message, or send /skip to run without arguments.')
         return
 
+    if data == 'resend_code':
+        if user.id not in TEMP or TEMP[user.id].get('state') != 'AWAIT_CODE':
+            await query.message.reply_text('No active sign-in session.')
+            return
+        phone = TEMP[user.id].get('phone')
+        client = TEMP[user.id].get('client')
+        if not client or not phone:
+            await query.message.reply_text('Session lost. Start over with /connect.')
+            return
+        try:
+            await client.send_code_request(phone)
+            await query.message.reply_text('✅ New code sent! Reply with the code.')
+        except Exception as e:
+            await query.message.reply_text(f'Failed to resend: {e}')
+            try:
+                await client.disconnect()
+            except:
+                pass
+            TEMP.pop(user.id, None)
+        return
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # interactive main menu
@@ -270,7 +291,10 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             TEMP.pop(user.id, None)
             return
         TEMP[user.id].update({'state': 'AWAIT_CODE', 'phone': phone, 'client': client})
-        await update.message.reply_text('Code sent. Please reply with the login code you received.')
+        await update.message.reply_text(
+            '✅ Code sent!\n\nReply with the login code (expires in ~5 minutes).',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('🔄 Resend Code', callback_data='resend_code')]])
+        )
         return
 
     if state == 'AWAIT_CODE':
@@ -281,12 +305,22 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await client.sign_in(phone, code)
         except SessionPasswordNeededError:
             TEMP[user.id]['state'] = 'AWAIT_PASSWORD'
-            await update.message.reply_text('Two-step password is enabled. Send your 2FA password now.')
+            await update.message.reply_text('🔐 Two-step password enabled.\n\nSend your 2FA password.')
             return
         except Exception as e:
-            await update.message.reply_text(f'Sign-in failed: {e}')
-            await client.disconnect()
-            TEMP.pop(user.id, None)
+            error_msg = str(e).lower()
+            if 'expired' in error_msg:
+                await update.message.reply_text(
+                    '❌ Code expired.\n\nUse the button below to get a new one.',
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('🔄 Resend Code', callback_data='resend_code')]])
+                )
+            else:
+                await update.message.reply_text(f'❌ Sign-in failed: {e}')
+                try:
+                    await client.disconnect()
+                except:
+                    pass
+                TEMP.pop(user.id, None)
             return
 
         # success
@@ -296,8 +330,11 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_sessions.append({'session': session_str, 'phone': phone, 'created_at': datetime.utcnow().isoformat()})
         sessions[str(user.id)] = user_sessions
         save_sessions(sessions)
-        await update.message.reply_text('Account connected and session saved.')
-        await client.disconnect()
+        await update.message.reply_text('✅ Account connected and session saved.')
+        try:
+            await client.disconnect()
+        except:
+            pass
         TEMP.pop(user.id, None)
         return
 
@@ -337,8 +374,11 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await client.sign_in(password=password)
         except Exception as e:
-            await update.message.reply_text(f'Password signin failed: {e}')
-            await client.disconnect()
+            await update.message.reply_text(f'❌ Password signin failed: {e}')
+            try:
+                await client.disconnect()
+            except:
+                pass
             TEMP.pop(user.id, None)
             return
         session_str = StringSession(client.session).save()
@@ -347,8 +387,11 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_sessions.append({'session': session_str, 'phone': phone, 'created_at': datetime.utcnow().isoformat()})
         sessions[str(user.id)] = user_sessions
         save_sessions(sessions)
-        await update.message.reply_text('Account connected and session saved (2FA).')
-        await client.disconnect()
+        await update.message.reply_text('✅ Account connected and session saved (2FA).')
+        try:
+            await client.disconnect()
+        except:
+            pass
         TEMP.pop(user.id, None)
         return
 
